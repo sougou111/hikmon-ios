@@ -1,0 +1,40 @@
+name: HikMon
+options:
+  bundleIdPrefix: com.ynvr
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    ENABLE_BITCODE: NO
+
+targets:
+  HikMon:
+    type: application
+    platform: iOS
+    sources:
+      - path: HikMon
+        excludes:
+          - "Resources/Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ynvr.hikmon
+        INFOPLIST_FILE: HikMon/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+schemes:
+  HikMon:
+    build:
+      targets:
+        HikMon: all
+    run:
+      config: Debug
+    archive:
+      config: Release
