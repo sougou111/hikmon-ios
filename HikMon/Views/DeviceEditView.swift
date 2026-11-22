@@ -9,6 +9,8 @@ struct DeviceEditView: View {
     @State private var busy = false
     @State private var message = ""
     @State private var ok = false
+    @State private var diagBusy = false
+    @State private var diagLines: [String] = []
 
     init(device: Device, isNew: Bool, onSave: @escaping (Device) -> Void) {
         _device = State(initialValue: device)
@@ -85,6 +87,26 @@ struct DeviceEditView: View {
                             .foregroundStyle(ok ? Color.green : Color.red)
                     }
                 }
+
+                Section {
+                    Button {
+                        Task { await diagnose() }
+                    } label: {
+                        HStack {
+                            Label("端口诊断（扫端口 + 试 RTSP）", systemImage: "stethoscope")
+                            Spacer()
+                            if diagBusy { ProgressView() }
+                        }
+                    }
+                    .disabled(diagBusy || device.host.isEmpty)
+                    ForEach(diagLines, id: \.self) { line in
+                        Text(line).font(.caption)
+                    }
+                } header: {
+                    Text("诊断")
+                } footer: {
+                    Text("海康端口分工：80 = ISAPI(HTTP)、554 = RTSP、8000 = SDK 私有协议。iVMS 4500+ 用的是 8000 那条私有通道，本 App 必须能访问 80 和 554。")
+                }
             }
             .navigationTitle(isNew ? "添加设备" : "编辑设备")
             .navigationBarTitleDisplayMode(.inline)
@@ -98,8 +120,7 @@ struct DeviceEditView: View {
         }
     }
 
-    private func probeAndLoad() async {
-        busy = true
+    private func probeAndLoad() async {        busy = true
         message = ""
         defer { busy = false }
         let api = ISAPIClient(device: device)
@@ -117,6 +138,33 @@ struct DeviceEditView: View {
         } catch {
             message = "连接失败：\(error.localizedDescription)"
             ok = false
+        }
+    }
+
+    /// 端口诊断：先扫常用端口，再分别验证 ISAPI 与 RTSP
+    private func diagnose() async {
+        diagBusy = true
+        diagLines = []
+        defer { diagBusy = false }
+
+        let open = await Prober.scan(host: device.host)
+        if open.isEmpty {
+            diagLines.append("❌ 常用端口（80/8000/554/8080/443…）都连不上")
+        } else {
+            diagLines.append("✅ 开放端口：" + open.map(String.init).joined(separator: "、"))
+        }
+        if open.contains(8000) && !open.contains(80) {
+            diagLines.append("→ 只开了 8000：那是海康 SDK 私有口，iVMS 4500+ 走这条；本 App 需要 80/554")
+        }
+
+        let rt = await Prober.rtsp(host: device.host, port: device.rtspPort)
+        diagLines.append((rt.ok ? "✅ " : "❌ ") + "RTSP \(device.rtspPort)：\(rt.note)")
+
+        do {
+            let info = try await ISAPIClient(device: device).deviceInfo()
+            diagLines.append("✅ ISAPI \(device.isapiPort)：\(info.model.isEmpty ? info.name : info.model)")
+        } catch {
+            diagLines.append("❌ ISAPI \(device.isapiPort)：\(error.localizedDescription)")
         }
     }
 }

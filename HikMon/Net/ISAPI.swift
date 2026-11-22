@@ -44,10 +44,19 @@ final class ISAPIClient: NSObject {
         guard let u = url(path) else { throw ISAPIError.badURL }
         var req = URLRequest(url: u)
         req.httpMethod = "GET"
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw ISAPIError.noResponse }
-        guard (200..<300).contains(http.statusCode) else { throw ISAPIError.http(http.statusCode) }
-        return data
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw ISAPIError.noResponse }
+            guard (200..<300).contains(http.statusCode) else { throw ISAPIError.http(http.statusCode) }
+            return data
+        } catch let e as URLError {
+            switch e.code {
+            case .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut, .badServerResponse:
+                throw ISAPIError.notHTTP(device.isapiPort)
+            default:
+                throw e
+            }
+        }
     }
 
     func put(_ path: String, body: String) async throws -> Data {
@@ -174,12 +183,15 @@ enum ISAPIError: LocalizedError {
     case badURL
     case noResponse
     case http(Int)
+    case notHTTP(Int)
     case empty
 
     var errorDescription: String? {
         switch self {
         case .badURL: return "地址不合法"
         case .noResponse: return "没有响应"
+        case .notHTTP(let port):
+            return "端口 \(port) 上没有 HTTP 服务。海康默认 80=ISAPI、554=RTSP、8000=SDK 私有协议；你填的多半是 SDK 端口，需要在路由器把 80/554 也映射出来。"
         case .http(let code):
             switch code {
             case 401: return "HTTP 401（账号或密码不对）"
