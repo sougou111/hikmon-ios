@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import SwiftUI
 
 /// 统一的后端抽象：SDK 可用时走 SDK（8000 私有协议），否则回落到 ISAPI+RTSP
 enum Backend {
