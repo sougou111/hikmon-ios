@@ -54,8 +54,24 @@ struct DeviceEditView: View {
                     Toggle("使用子码流（省流量、多画面更稳）", isOn: $device.useSubStream)
                 }
 
-                Section("通道") {
-                    if device.cameras.isEmpty {
+                Section {
+                    HStack {
+                        Text("SDK 端口")
+                        Spacer()
+                        TextField("8000", value: $device.sdkPort, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Text(HikSession.sdkReady
+                         ? "已集成海康 SDK（\(HikSession.sdkVersion)）：走 8000 私有协议，支持主/子码流、回放、声音、对讲"
+                         : "未集成海康 SDK：当前走 ISAPI(80) + RTSP(554)。把你的设备网络SDK放进 HikMon/SDK 后即可切到 8000 私有协议。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("取流方式")
+                }
+
+                Section("通道") {                    if device.cameras.isEmpty {
                         Text("点下面「拉取通道」从设备读取，也可以先保存，进实时页再拉。")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {

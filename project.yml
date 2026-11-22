@@ -28,6 +28,18 @@ targets:
         INFOPLIST_FILE: HikMon/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OBJC_BRIDGING_HEADER: HikMon/SDK/HikMon-Bridging-Header.h
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "$(inherited)"
+          - "HAS_HIKSDK=0"        # 放入官方 HCNetSDK 后改成 1
+        # ---- 集成海康 SDK 后取消下面几行注释 ----
+        # FRAMEWORK_SEARCH_PATHS:
+        #   - "$(inherited)"
+        #   - "$(SRCROOT)/HikMon/SDK"
+        # OTHER_LDFLAGS:
+        #   - "$(inherited)"
+        #   - "-framework"
+        #   - "HCNetSDK"
 
 schemes:
   HikMon:

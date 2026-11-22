@@ -14,6 +14,7 @@ struct Device: Identifiable, Codable, Hashable {
     var host: String            // IP 或域名
     var isapiPort: Int = 80
     var rtspPort: Int = 554
+    var sdkPort: Int = 8000     // 海康 SDK 私有协议端口（iVMS 4500+ 用的就是它）
     var user: String = "admin"
     var pass: String = ""
     var useSubStream: Bool = false
