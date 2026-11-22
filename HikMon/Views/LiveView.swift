@@ -1,7 +1,7 @@
 import SwiftUI
 import Photos
 
-// MARK: - 实时预览
+// MARK: - 实时预览（无限通道 / 可选布局 / 定时轮播）
 
 struct LiveView: View {
     let device: Device
@@ -12,15 +12,32 @@ struct LiveView: View {
     @State private var err = ""
     @State private var showPlayback = false
 
+    // 布局：每屏 1 / 4 / 9 / 16 格
+    @State private var cellsPerPage: Int = 4
+    @State private var page: Int = 0
+    // 轮播
+    @State private var autoCycle = false
+    @State private var cycleSeconds: Int = 10
+    @State private var cycleTask: Task<Void, Never>?
+
     init(device: Device) {
         self.device = device
         _cameras = State(initialValue: device.cameras)
     }
 
+    private var pageCount: Int {
+        max(1, Int(ceil(Double(cameras.count) / Double(cellsPerPage))))
+    }
+
+    private var pageCameras: [Camera] {
+        let start = page * cellsPerPage
+        guard start < cameras.count else { return [] }
+        return Array(cameras[start..<min(start + cellsPerPage, cameras.count)])
+    }
+
     private var columns: [GridItem] {
-        cameras.count == 1
-            ? [GridItem(.flexible())]
-            : [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
+        let n = Int(sqrt(Double(cellsPerPage)))
+        return Array(repeating: GridItem(.flexible(), spacing: 4), count: max(1, n))
     }
 
     var body: some View {
@@ -35,13 +52,24 @@ struct LiveView: View {
                 }
                 .padding(.top, 80)
             } else {
-                LazyVGrid(columns: columns, spacing: 6) {
-                    ForEach(cameras) { cam in
+                LazyVGrid(columns: columns, spacing: 4) {
+                    ForEach(pageCameras) { cam in
                         CameraCell(device: device, camera: cam)
                             .onTapGesture { fullscreen = cam }
                     }
                 }
-                .padding(6)
+                .padding(4)
+
+                if pageCount > 1 {
+                    HStack(spacing: 16) {
+                        Button { page = max(0, page - 1) } label: { Image(systemName: "chevron.left") }
+                            .disabled(page == 0)
+                        Text("\(page + 1) / \(pageCount)").font(.caption).monospacedDigit()
+                        Button { page = min(pageCount - 1, page + 1) } label: { Image(systemName: "chevron.right") }
+                            .disabled(page >= pageCount - 1)
+                    }
+                    .padding(.vertical, 8)
+                }
             }
 
             if !err.isEmpty {
@@ -52,6 +80,33 @@ struct LiveView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // 布局
+                Menu {
+                    ForEach([1, 4, 9, 16], id: \.self) { n in
+                        Button {
+                            cellsPerPage = n
+                            page = 0
+                        } label: {
+                            Label("\(Int(sqrt(Double(n)))) × \(Int(sqrt(Double(n))))", systemImage: cellsPerPage == n ? "checkmark" : "square.grid.2x2")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "square.grid.2x2")
+                }
+
+                // 轮播
+                Menu {
+                    Toggle("自动轮播", isOn: $autoCycle)
+                    ForEach([5, 10, 30, 60], id: \.self) { s in
+                        Button("每 \(s) 秒切换") {
+                            cycleSeconds = s
+                            autoCycle = true
+                        }
+                    }
+                } label: {
+                    Image(systemName: autoCycle ? "play.rectangle.fill" : "play.rectangle")
+                }
+
                 Button { showPlayback = true } label: { Image(systemName: "clock.arrow.circlepath") }
                 Button {
                     Task { await loadChannels() }
@@ -69,6 +124,20 @@ struct LiveView: View {
         .task {
             if cameras.isEmpty { await loadChannels() }
         }
+        .onChange(of: autoCycle) { on in
+            cycleTask?.cancel()
+            guard on else { return }
+            cycleTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(cycleSeconds) * 1_000_000_000)
+                    if Task.isCancelled { break }
+                    await MainActor.run {
+                        if pageCount > 1 { page = (page + 1) % pageCount }
+                    }
+                }
+            }
+        }
+        .onDisappear { cycleTask?.cancel() }
     }
 
     private func loadChannels() async {
@@ -77,7 +146,7 @@ struct LiveView: View {
         do {
             let list = try await ISAPIClient(device: device).channels()
             if list.isEmpty {
-                err = "设备没有返回通道（可能是 IPC：试试直接填通道 1）"
+                err = "设备没有返回通道（IPC 可手动填通道 1）"
             } else {
                 cameras = list
                 err = ""
@@ -121,11 +190,11 @@ struct CameraCell: View {
                 }
                 Spacer()
             }
-            .padding(6)
+            .padding(5)
         }
         .aspectRatio(16.0 / 9.0, contentMode: .fit)
         .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
         .onAppear { box.play(device.liveURL(channel: camera.channel)) }
         .onDisappear { box.stop() }
     }
@@ -200,9 +269,7 @@ struct PTZPad: View {
             ptzButton("chevron.up", pan: 0, tilt: 1)
             HStack(spacing: 8) {
                 ptzButton("chevron.left", pan: -1, tilt: 0)
-                Button {
-                    send(pan: 0, tilt: 0, zoom: 0)
-                } label: {
+                Button { send(pan: 0, tilt: 0, zoom: 0) } label: {
                     Image(systemName: "stop.fill")
                         .frame(width: 52, height: 52)
                         .background(.black.opacity(0.5))
@@ -220,9 +287,7 @@ struct PTZPad: View {
     }
 
     private func ptzButton(_ icon: String, pan: Int, tilt: Int, zoom: Int = 0) -> some View {
-        Button {
-            send(pan: pan, tilt: tilt, zoom: zoom)
-        } label: {
+        Button { send(pan: pan, tilt: tilt, zoom: zoom) } label: {
             Image(systemName: icon)
                 .frame(width: 46, height: 46)
                 .background(.black.opacity(0.5))
