@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DevicesPage: View {
     @EnvironmentObject private var store: DeviceStore
@@ -10,6 +11,7 @@ struct DevicesPage: View {
     @State private var user = "admin"
     @State private var pass = ""
     @State private var code = ""
+    @State private var showImporter = false
 
     private var formOpen: Bool { state.showAddForm || state.editID != nil }
     private var editing: Device? { store.byID(state.editID) }
@@ -20,6 +22,8 @@ struct DevicesPage: View {
                 if formOpen { form }
 
                 SectionTitle(text: "已保存的服务器")
+
+                backupRow
 
                 if store.devices.isEmpty {
                     HintLine(text: "还没有服务器，点下面的「添加服务器」")
@@ -49,6 +53,37 @@ struct DevicesPage: View {
         .onAppear { fill(editing) }
         .onChange(of: state.editID) { _ in fill(editing) }
         .onChange(of: state.showAddForm) { on in if on { fill(nil) } }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url):
+                if store.importBackup(from: url) {
+                    state.show("已恢复 \(store.devices.count) 台服务器")
+                    HikLog.shared.add("从文件恢复 \(store.devices.count) 台服务器")
+                } else {
+                    state.show("文件格式不对")
+                }
+            case .failure:
+                state.show("导入失败")
+            }
+        }
+    }
+
+    /// 覆盖安装/升级都不会丢数据（存在 App 的 Documents 里）；换手机或删了重装时用这两颗按钮
+    private var backupRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ShareLink(item: store.writeBackup()) {
+                    Chip(text: "备份配置")
+                }
+                Button { showImporter = true } label: { Chip(text: "恢复配置") }
+                    .buttonStyle(.plain)
+                Spacer()
+            }
+            Text("覆盖安装不会丢服务器；换机或删了重装，从「文件」App → 我的 iPhone → 瑞丰监控 里取备份恢复")
+                .font(.system(size: 10))
+                .foregroundStyle(C.hintC)
+        }
+        .padding(.bottom, 6)
     }
 
     // MARK: 表单

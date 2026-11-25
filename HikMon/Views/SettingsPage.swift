@@ -67,18 +67,6 @@ struct SettingsPage: View {
                     HikLog.shared.add("\(d.label) 网络模式 → \(nd?.ipModeName ?? "")")
                 }
 
-                SectionTitle(text: "音频")
-                row("音频模式", d.talkMode == 1 ? "仅监听" : "对讲 + 监听") {
-                    store.mutate(d.id) { $0.talkMode = ($0.talkMode == 1) ? 0 : 1 }
-                }
-                row("音频编码", d.talkEnc == 1 ? "A-law" : "µ-law") {
-                    store.mutate(d.id) { $0.talkEnc = ($0.talkEnc == 1) ? 0 : 1 }
-                }
-                row("音频通道", d.talkChannel > 0 ? "通道 \(d.talkChannel)" : "未设置") {
-                    state.channelDev = d.id
-                    state.go(.channels)
-                }
-
                 SectionTitle(text: "诊断")
                 row("读取设备配置", "只读") {
                     state.diagDev = d.id

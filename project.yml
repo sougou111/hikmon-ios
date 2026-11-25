@@ -9,8 +9,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.01"
-    CURRENT_PROJECT_VERSION: "101"
+    MARKETING_VERSION: "1.02"
+    CURRENT_PROJECT_VERSION: "102"
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
     ENABLE_BITCODE: NO
@@ -90,4 +90,5 @@ schemes:
       config: Debug
     archive:
       config: Release
+
 
