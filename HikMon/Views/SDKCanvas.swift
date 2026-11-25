@@ -12,7 +12,15 @@ final class SDKCanvasView: UIView {
     var onAttach: (() -> Void)?
     var onSingleTap: (() -> Void)?
 
-    var zoomEnabled = true
+    var zoomEnabled = true { didSet { applyGestureAvailability() } }
+
+    /// 网格/通道格子里关掉画布手势，否则 UIPan 会吃掉 SwiftUI 的左右滑动
+    var gesturesEnabled = true { didSet { applyGestureAvailability() } }
+
+    private var pinch: UIPinchGestureRecognizer!
+    private var pan: UIPanGestureRecognizer!
+    private var doubleTap: UITapGestureRecognizer!
+    private var singleTap: UITapGestureRecognizer!
 
     private var scale: CGFloat = 1
     private var offset: CGPoint = .zero
@@ -73,14 +81,14 @@ final class SDKCanvasView: UIView {
     // MARK: - 手势
 
     private func installGestures() {
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.maximumNumberOfTouches = 1
 
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
+        doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
         doubleTap.numberOfTapsRequired = 2
 
-        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
         singleTap.numberOfTapsRequired = 1
         singleTap.require(toFail: doubleTap)
 
@@ -88,6 +96,15 @@ final class SDKCanvasView: UIView {
         addGestureRecognizer(pan)
         addGestureRecognizer(doubleTap)
         addGestureRecognizer(singleTap)
+        applyGestureAvailability()
+    }
+
+    private func applyGestureAvailability() {
+        let on = gesturesEnabled
+        pinch?.isEnabled = on && zoomEnabled
+        pan?.isEnabled = on && zoomEnabled
+        doubleTap?.isEnabled = on
+        singleTap?.isEnabled = on
     }
 
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {

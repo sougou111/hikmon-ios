@@ -15,11 +15,33 @@ struct ChannelsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("\(page + 1) / \(pageCount) 页")
-                .font(.system(size: 13))
-                .foregroundStyle(C.text)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 6)
+            HStack(spacing: 14) {
+                Button { flip(-1) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(page > 0 ? C.text : C.faint)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .disabled(page <= 0)
+
+                Text("\(page + 1) / \(pageCount) 页")
+                    .font(.system(size: 13))
+                    .foregroundStyle(C.text)
+
+                Button { flip(1) } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(page < pageCount - 1 ? C.text : C.faint)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .disabled(page >= pageCount - 1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 6)
 
             grid
                 .padding(.horizontal, 12)
@@ -33,13 +55,15 @@ struct ChannelsPage: View {
         }
         .onAppear(perform: setup)
         .onDisappear { cells.forEach { $0.stop() } }
-        .gesture(
-            DragGesture(minimumDistance: 30)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
                 .onChanged { v in dragX = v.translation.width }
                 .onEnded { v in
                     let dx = v.translation.width
+                    let dy = v.translation.height
                     dragX = 0
-                    if abs(dx) > 60 && abs(dx) > abs(v.translation.height) * 1.4 {
+                    if abs(dx) > 40 && abs(dx) > abs(dy) * 1.2 {
                         flip(dx < 0 ? 1 : -1)
                     }
                 }

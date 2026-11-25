@@ -18,12 +18,15 @@ final class LiveCell: ObservableObject, Identifiable {
     private let withSound: Bool
     private let autoStart: Bool
 
-    init(device: Device, channel: Int, tip: String, sound: Bool, autoStart: Bool = false) {
+    init(device: Device, channel: Int, tip: String, sound: Bool,
+         autoStart: Bool = false, interactive: Bool = false) {
         self.device = device
         self.channel = channel
         self.tip = tip
         self.withSound = sound
         self.autoStart = autoStart
+        self.canvas.gesturesEnabled = interactive
+        self.canvas.zoomEnabled = interactive
         self.canvas.onAttach = { [weak self] in
             guard let self else { return }
             if self.pending || self.autoStart {

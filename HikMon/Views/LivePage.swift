@@ -30,7 +30,8 @@ private struct LiveContent: View {
                                                    channel: channel,
                                                    tip: "连接中…",
                                                    sound: true,
-                                                   autoStart: true))
+                                                   autoStart: true,
+                                                   interactive: true))
     }
 
     var body: some View {

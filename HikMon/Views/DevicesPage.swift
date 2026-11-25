@@ -77,6 +77,8 @@ struct DevicesPage: View {
                 }
                 Button { showImporter = true } label: { Chip(text: "恢复配置") }
                     .buttonStyle(.plain)
+                Button { state.go(.logs) } label: { Chip(text: "日志记录") }
+                    .buttonStyle(.plain)
                 Spacer()
             }
             Text("覆盖安装不会丢服务器；换机或删了重装，从「文件」App → 我的 iPhone → 瑞丰监控 里取备份恢复")

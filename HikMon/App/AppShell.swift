@@ -46,14 +46,13 @@ final class AppState: ObservableObject {
 struct AppShell: View {
     @EnvironmentObject private var store: DeviceStore
     @StateObject private var state = AppState()
-    @ObservedObject private var log = HikLog.shared
+
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            logStrip
         }
         .background(C.bg.ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -111,7 +110,8 @@ struct AppShell: View {
         case .home: return "设备管理"
         case .devices, .channels, .live: return "返回首页"
         case .settings: return "返回设备"
-        case .diag, .playback, .logs: return "返回"
+        case .logs: return "返回设备"
+        case .diag, .playback: return "返回"
         }
     }
 
@@ -121,7 +121,8 @@ struct AppShell: View {
         case .devices, .channels, .live: state.go(.home)
         case .settings: state.go(.devices)
         case .diag: state.go(.devices)
-        case .logs, .playback: state.go(.home)
+        case .logs: state.go(.devices)
+        case .playback: state.go(.home)
         }
     }
 
@@ -168,18 +169,7 @@ struct AppShell: View {
         }
     }
 
-    // MARK: 底部日志（3 行，点了进日志页）
-
-    private var logStrip: some View {
-        Text(log.tail.isEmpty ? " " : log.tail)
-            .font(.system(size: 10))
-            .foregroundStyle(C.faint)
-            .lineLimit(3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
-            .contentShape(Rectangle())
-            .onTapGesture { state.go(.logs) }
-    }
+    // MARK: 底部不再显示日志；日志在「设备管理 → 日志记录」里看
 }
+
+
