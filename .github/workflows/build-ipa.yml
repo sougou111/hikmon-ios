@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-14, macos-13]
+        os: [macos-26, macos-15-intel, macos-13]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -90,6 +90,7 @@ jobs:
           name: HikMon-unsigned-ipa-${{ matrix.os }}
           path: HikMon-unsigned.ipa
           retention-days: 30
+
 
 
 

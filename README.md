@@ -39,8 +39,17 @@
 
 ## 版本
 
+- 1.03：通道管理补上左右滑动翻页（并加 ‹ › 箭头兜底）；底部日志条去掉，改到「设备管理 → 日志记录」；服务器配置落 Documents + 旧数据迁移 + 备份/恢复
+- 1.02：去掉设置里的音频模式/编码/通道（全走 SDK 默认）
 - 1.01：按安卓 1:1 重写界面（8 页、收藏、语音通道、按安卓节奏的回放时间轴），对讲改 MR_V30 + G.711
 - 1.00：首版原生 HCNetSDK 取流
+
+## 数据不会因为覆盖安装丢
+
+- 服务器列表存在 App 的 `Documents/hikmon-devices.json`（覆盖安装/升级不动这个目录），同时镜像一份到 UserDefaults
+- 启动时会自动迁移老版本用过的 key（`hikmon.devices` / `hikmon.devices.v2` / `v3`）和旧字段结构
+- 「设备管理 → 备份配置」导出 JSON 到「文件」App（可发微信/存 iCloud）；换机或删了重装用「恢复配置」导入
+- Info.plist 开了 `UIFileSharingEnabled` + `LSSupportsOpeningDocumentsInPlace`，「文件 → 我的 iPhone → 瑞丰监控」里能直接看到备份
 
 ## 已知边界
 
