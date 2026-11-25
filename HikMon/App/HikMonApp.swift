@@ -7,11 +7,12 @@ struct HikMonApp: App {
     init() {
         HikLog.shared.startCapture()
         HikMonSDK.globalInit()
+        HikLog.shared.add("瑞丰监控 iOS v1.01 启动")
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            AppShell()
                 .environmentObject(store)
         }
     }

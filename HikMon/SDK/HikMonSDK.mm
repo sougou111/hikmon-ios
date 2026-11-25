@@ -2,17 +2,7 @@
 //  HikMonSDK.mm  (Objective-C++)
 //  海康 HCNetSDK iOS 静态库的真实调用层。
 //
-//  编译开关：GCC_PREPROCESSOR_DEFINITIONS 里有 HAS_HIKSDK=1 时走真实现，
-//  否则整个文件退化成空实现，保证没有 SDK 也能编译。
-//
-//  关键点（都是踩过的坑）：
-//  1) HCNetSDK.h 在 __APPLE__ 下把 NET_DVR_API 定义成 extern "C"，只能在 C++ 里
-//     编译，所以本文件必须是 .mm。
-//  2) HCNetSDK.h 会 #define BOOL int / #define NULL 0 / #define TRUE 1，
-//     所以它必须放在 Foundation / UIKit 之后 include，且不能进 Swift 桥接头。
-//  3) PlayM4 的官方头 plaympeg4.h 引用了 Windows 的 SYSTEMTIME，iOS 上编不过；
-//     这里只手写用到的几个 PlayM4 声明（C linkage 与库中符号一致）。
-//  4) NET_DVR_CloseSound() 没有参数；NET_DVR_StopVoiceCom() 要传句柄。
+//  HAS_HIKSDK=1 走真实现，否则整文件退化成空实现，保证没 SDK 也能编过。
 //
 
 #import "HikMonSDK.h"
@@ -26,7 +16,7 @@
 #include "HCNetSDK.h"
 
 // ---------------------------------------------------------------------------
-// PlayM4（libplayctrl.a / libHCCore.a）最小声明
+// PlayM4 最小声明（官方 plaympeg4.h 依赖 Windows 的 SYSTEMTIME，iOS 编不过）
 // ---------------------------------------------------------------------------
 extern "C" {
     BOOL  PlayM4_GetPort(LONG *nPort);
@@ -43,11 +33,11 @@ extern "C" {
     DWORD PlayM4_GetLastError(LONG nPort);
 }
 
-#define HIK_STREAME_REALTIME 0   // plaympeg4.h: STREAME_REALTIME
+#define HIK_STREAME_REALTIME 0
 #define HIK_STREAME_FILE     1
 
 // ---------------------------------------------------------------------------
-// 回放上下文
+// 每路回放的上下文
 // ---------------------------------------------------------------------------
 @interface HikPlayCtx : NSObject
 @property (atomic, assign) LONG  playHandle;
@@ -61,27 +51,27 @@ extern "C" {
 @end
 
 static NSMutableDictionary<NSNumber *, HikPlayCtx *> *gPlayCtxs = nil;
-static NSMutableDictionary<NSNumber *, NSNumber *> *gChanCounts = nil;
+static NSMutableDictionary<NSNumber *, NSValue *> *gChanInfo = nil;   // uid -> {count, base}
+static NSMutableDictionary<NSNumber *, id> *gVoiceBlocks = nil;       // voiceHandle -> block
 static LONG gLiveSoundHandle = -1;
-static LONG gTalkHandle = -1;
 
 static void HikCtxInit(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         gPlayCtxs = [NSMutableDictionary dictionary];
+        gChanInfo = [NSMutableDictionary dictionary];
+        gVoiceBlocks = [NSMutableDictionary dictionary];
     });
 }
 
 static HikPlayCtx *HikCtxFor(LONG handle) {
     if (!gPlayCtxs) return nil;
     HikPlayCtx *ctx = nil;
-    @synchronized (gPlayCtxs) {
-        ctx = gPlayCtxs[@(handle)];
-    }
+    @synchronized (gPlayCtxs) { ctx = gPlayCtxs[@(handle)]; }
     return ctx;
 }
 
-// 回放数据回调：SDK 在内部线程回调，这里只做搬运，UI 操作回主线程。
+// 回放数据回调：SDK 内部线程回调，只做搬运，UI 操作回主线程
 static void CALLBACK HikPlayDataCB(LONG lPlayHandle, DWORD dwDataType, BYTE *pBuffer,
                                    DWORD dwBufSize, DWORD dwUser)
 {
@@ -93,15 +83,12 @@ static void CALLBACK HikPlayDataCB(LONG lPlayHandle, DWORD dwDataType, BYTE *pBu
             if (ctx.portReady) return;
             LONG port = -1;
             if (!PlayM4_GetPort(&port)) {
-                NSLog(@"[HikMonSDK] PlayM4_GetPort failed err=%u (handle=%d)",
-                      (unsigned)PlayM4_GetLastError(port), (int)lPlayHandle);
+                NSLog(@"[HikMonSDK] PlayM4_GetPort failed err=%u", (unsigned)PlayM4_GetLastError(port));
                 return;
             }
             PlayM4_SetStreamOpenMode(port, HIK_STREAME_REALTIME);
-            // 有的固件第一个 SYSHEAD 包长为 0，也必须 OpenStream，否则后面 InputData 全部失败
             if (!PlayM4_OpenStream(port, dwBufSize > 0 ? pBuffer : NULL, dwBufSize, 4 * 1024 * 1024)) {
-                NSLog(@"[HikMonSDK] PlayM4_OpenStream failed err=%u (head=%u)",
-                      (unsigned)PlayM4_GetLastError(port), (unsigned)dwBufSize);
+                NSLog(@"[HikMonSDK] PlayM4_OpenStream failed err=%u", (unsigned)PlayM4_GetLastError(port));
                 PlayM4_FreePort(port);
                 return;
             }
@@ -112,7 +99,7 @@ static void CALLBACK HikPlayDataCB(LONG lPlayHandle, DWORD dwDataType, BYTE *pBu
             UIView *v = ctx.view;
             LONG p = port;
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (v.window != nil || v.superview != nil) {
+                if (v != nil && (v.window != nil || v.superview != nil)) {
                     if (!PlayM4_Play(p, (__bridge void *)v)) {
                         NSLog(@"[HikMonSDK] PlayM4_Play failed err=%u", (unsigned)PlayM4_GetLastError(p));
                     }
@@ -121,110 +108,106 @@ static void CALLBACK HikPlayDataCB(LONG lPlayHandle, DWORD dwDataType, BYTE *pBu
             });
         } else if (dwDataType == NET_DVR_STREAMDATA || dwDataType == NET_DVR_AUDIOSTREAMDATA) {
             if (ctx.portReady && dwBufSize > 0) {
-                // 缓冲满时 InputData 会返回失败，丢掉这帧继续喂即可
                 PlayM4_InputData(ctx.port, pBuffer, dwBufSize);
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// 工具
-// ---------------------------------------------------------------------------
+// 语音对讲回调
+static void CALLBACK HikVoiceCB(LONG lVoiceComHandle, char *pRecvDataBuffer, DWORD dwBufSize,
+                                BYTE byAudioFlag, void *pUser)
+{
+    @autoreleasepool {
+        if (!gVoiceBlocks || dwBufSize == 0 || pRecvDataBuffer == NULL) return;
+        id obj = nil;
+        @synchronized (gVoiceBlocks) { obj = gVoiceBlocks[@(lVoiceComHandle)]; }
+        void (^cb)(NSData *, int) = obj;
+        if (!cb) return;
+        NSData *data = [NSData dataWithBytes:pRecvDataBuffer length:dwBufSize];
+        cb(data, (int)byAudioFlag);
+    }
+}
+
 static void HikFillTime(NET_DVR_TIME *t, NSDate *date) {
     if (t == NULL) return;
     memset(t, 0, sizeof(NET_DVR_TIME));
     NSCalendar *cal = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     cal.timeZone = [NSTimeZone localTimeZone];
     NSDateComponents *c = [cal components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay |
-                                          NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
-                                  fromDate:(date ?: [NSDate date])];
-    t->dwYear   = (DWORD)c.year;
-    t->dwMonth  = (DWORD)c.month;
-    t->dwDay    = (DWORD)c.day;
-    t->dwHour   = (DWORD)c.hour;
+                                         NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
+                                 fromDate:date];
+    t->dwYear = (DWORD)c.year;
+    t->dwMonth = (DWORD)c.month;
+    t->dwDay = (DWORD)c.day;
+    t->dwHour = (DWORD)c.hour;
     t->dwMinute = (DWORD)c.minute;
     t->dwSecond = (DWORD)c.second;
 }
 
-static NSString *HikErrText(DWORD code) {
-    NSString *meaning = @"";
-    switch (code) {
-        case 0:   meaning = @"成功"; break;
-        case 1:   meaning = @"用户名密码错误"; break;
-        case 2:   meaning = @"权限不足"; break;
-        case 3:   meaning = @"SDK 未初始化"; break;
-        case 4:   meaning = @"通道号错误"; break;
-        case 5:   meaning = @"资源不足（句柄/端口用满）"; break;
-        case 6:   meaning = @"句柄无效"; break;
-        case 7:   meaning = @"连接设备失败（IP/端口不对或被防火墙拦）"; break;
-        case 8:   meaning = @"向设备发送失败"; break;
-        case 9:   meaning = @"从设备接收失败"; break;
-        case 10:  meaning = @"解码失败"; break;
-        case 12:  meaning = @"设备不在线"; break;
-        case 29:  meaning = @"设备命令执行失败"; break;
-        case 43:  meaning = @"设备不支持该操作"; break;
-        case 96:  meaning = @"网络断开"; break;
-        default:  meaning = @"SDK 错误"; break;
-    }
-    return [NSString stringWithFormat:@"错误码 %u（%@）", (unsigned)code, meaning];
-}
-
 @implementation HikMonSDK
 
+// ---------------------------------------------------------------------------
+// 全局
+// ---------------------------------------------------------------------------
 + (BOOL)available { return YES; }
+
++ (NSString *)sdkVersion {
+    DWORD v = NET_DVR_GetSDKBuildVersion();
+    return [NSString stringWithFormat:@"%u.%u.%u.%u",
+            (v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF];
+}
 
 + (void)globalInit {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NET_DVR_Init();
-        NET_DVR_SetConnectTime(3000, 3);
+        NET_DVR_SetConnectTime(5000, 3);
         NET_DVR_SetReconnect(10000, TRUE);
-        HikCtxInit();
+        NET_DVR_SetRecvTimeOut(8000);
     });
 }
 
-+ (NSString *)sdkVersion {
-    DWORD v = NET_DVR_GetSDKBuildVersion();
-    return [NSString stringWithFormat:@"%X.%X.%X.%X (%u)",
-            (unsigned)((v >> 24) & 0xFF), (unsigned)((v >> 16) & 0xFF),
-            (unsigned)((v >> 8) & 0xFF), (unsigned)(v & 0xFF), (unsigned)v];
-}
-
-+ (unsigned int)lastErrorCode {
-    return (unsigned int)NET_DVR_GetLastError();
-}
++ (unsigned int)lastErrorCode { return (unsigned int)NET_DVR_GetLastError(); }
 
 + (NSString *)lastErrorText {
-    return HikErrText(NET_DVR_GetLastError());
+    DWORD e = NET_DVR_GetLastError();
+    return [NSString stringWithFormat:@"err=%u", (unsigned)e];
 }
 
-+ (NSString *)resolveHost:(NSString *)host {
++ (nullable NSString *)resolveHost:(NSString *)host {
     if (host.length == 0) return nil;
-    // 已经是 IPv4 就直接返回
-    struct in_addr addr;
-    if (inet_pton(AF_INET, host.UTF8String, &addr) == 1) return host;
-
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo *res = NULL;
     if (getaddrinfo(host.UTF8String, NULL, &hints, &res) != 0 || res == NULL) return nil;
-
-    char buf[INET_ADDRSTRLEN] = {0};
-    NSString *ip = nil;
+    char buf[INET6_ADDRSTRLEN];
+    NSString *out = nil;
     for (struct addrinfo *p = res; p != NULL; p = p->ai_next) {
-        if (p->ai_family == AF_INET) {
-            struct sockaddr_in *sin = (struct sockaddr_in *)p->ai_addr;
-            if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
-                ip = [NSString stringWithUTF8String:buf];
-                break;
-            }
+        void *addr = (p->ai_family == AF_INET)
+            ? (void *)&((struct sockaddr_in *)p->ai_addr)->sin_addr
+            : (void *)&((struct sockaddr_in6 *)p->ai_addr)->sin6_addr;
+        if (inet_ntop(p->ai_family, addr, buf, sizeof(buf)) != NULL) {
+            out = [NSString stringWithUTF8String:buf];
+            break;
         }
     }
     freeaddrinfo(res);
-    return ip;
+    return out;
+}
+
++ (BOOL)setProtectKey:(NSString *)key {
+    if (key.length == 0) return NO;
+    NET_DVR_SDKLOCAL_CFG cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    NSData *raw = [key dataUsingEncoding:NSUTF8StringEncoding];
+    NSUInteger n = MIN(raw.length, sizeof(cfg.byProtectKey));
+    memcpy(cfg.byProtectKey, raw.bytes, n);
+    BOOL ok = NET_DVR_SetSDKLocalConfig(&cfg);
+    NSLog(@"[HikMonSDK] 码流加密设置 -> %d", (int)ok);
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,54 +215,64 @@ static NSString *HikErrText(DWORD code) {
 // ---------------------------------------------------------------------------
 + (NSInteger)loginHost:(NSString *)host port:(int)port user:(NSString *)user password:(NSString *)pass {
     [self globalInit];
-    if (host.length == 0) return -1;
+    HikCtxInit();
 
     NET_DVR_USER_LOGIN_INFO info;
     memset(&info, 0, sizeof(info));
-    strncpy(info.sDeviceAddress, host.UTF8String, sizeof(info.sDeviceAddress) - 1);
-    info.wPort = (WORD)(port > 0 ? port : 8000);
-    strncpy(info.sUserName, (user ?: @"admin").UTF8String, sizeof(info.sUserName) - 1);
-    strncpy(info.sPassword, (pass ?: @"").UTF8String, sizeof(info.sPassword) - 1);
+    strncpy(info.sDeviceAddress, host.UTF8String ?: "", sizeof(info.sDeviceAddress) - 1);
+    strncpy(info.sUserName, user.UTF8String ?: "", sizeof(info.sUserName) - 1);
+    strncpy(info.sPassword, pass.UTF8String ?: "", sizeof(info.sPassword) - 1);
+    info.wPort = (WORD)port;
     info.bUseAsynLogin = 0;
-    info.byLoginMode = 0;      // 0 = Private（私有协议）
-    info.byUseTransport = 0;
-    info.byHttps = 0;
 
     NET_DVR_DEVICEINFO_V40 devInfo;
     memset(&devInfo, 0, sizeof(devInfo));
 
     LONG uid = NET_DVR_Login_V40(&info, &devInfo);
     if (uid < 0) {
-        NSLog(@"[HikMonSDK] login %@:%d failed: %@", host, port, [self lastErrorText]);
+        NSLog(@"[HikMonSDK] Login %@:%d failed err=%u", host, port, (unsigned)NET_DVR_GetLastError());
         return -1;
     }
 
-    int chans = (int)devInfo.struDeviceV30.byChanNum
-              + (int)devInfo.struDeviceV30.byIPChanNum
-              + (int)devInfo.struDeviceV30.byHighDChanNum * 256;
-    if (chans <= 0) chans = (int)devInfo.struDeviceV30.byChanNum;
-    @synchronized ([HikMonSDK class]) {
-        if (gChanCounts == nil) gChanCounts = [NSMutableDictionary dictionary];
-        gChanCounts[@(uid)] = @(chans);
+    int nIP = devInfo.struDeviceV30.byIPChanNum + devInfo.struDeviceV30.byHighDChanNum * 256;
+    int nA = devInfo.struDeviceV30.byChanNum;
+    int startD = devInfo.struDeviceV30.byStartDChan;
+    int startA = devInfo.struDeviceV30.byStartChan;
+    int base = nIP > 0 ? (startD > 0 ? startD : 1) : (startA > 0 ? startA : 1);
+    int cnt = nIP > 0 ? nIP : (nA > 0 ? nA : 8);
+
+    int info2[2] = {cnt, base};
+    @synchronized (gChanInfo) {
+        gChanInfo[@(uid)] = [NSValue valueWithBytes:info2 objCType:@encode(int[2])];
     }
-    NSLog(@"[HikMonSDK] login ok uid=%d chans=%d", (int)uid, chans);
-    return (NSInteger)uid;
+    NSLog(@"[HikMonSDK] 登录成功 %@:%d uid=%ld 通道=%d 基址=%d", host, port, (long)uid, cnt, base);
+    return uid;
 }
 
 + (void)logout:(NSInteger)userId {
     if (userId < 0) return;
+    @synchronized (gChanInfo) { [gChanInfo removeObjectForKey:@(userId)]; }
     NET_DVR_Logout((LONG)userId);
-    @synchronized ([HikMonSDK class]) {
-        [gChanCounts removeObjectForKey:@(userId)];
-    }
 }
 
 + (int)channelCount:(NSInteger)userId {
-    int n = 0;
-    @synchronized ([HikMonSDK class]) {
-        n = [gChanCounts[@(userId)] intValue];
-    }
-    return n > 0 ? n : 1;
+    if (!gChanInfo) return 1;
+    NSValue *v = nil;
+    @synchronized (gChanInfo) { v = gChanInfo[@(userId)]; }
+    if (!v) return 1;
+    int info2[2] = {1, 1};
+    [v getValue:info2];
+    return info2[0] > 0 ? info2[0] : 1;
+}
+
++ (int)channelBase:(NSInteger)userId {
+    if (!gChanInfo) return 1;
+    NSValue *v = nil;
+    @synchronized (gChanInfo) { v = gChanInfo[@(userId)]; }
+    if (!v) return 1;
+    int info2[2] = {1, 1};
+    [v getValue:info2];
+    return info2[1] > 0 ? info2[1] : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,12 +284,12 @@ static NSString *HikErrText(DWORD code) {
 
     NET_DVR_PREVIEWINFO pi;
     memset(&pi, 0, sizeof(pi));
-    pi.lChannel       = (LONG)(channel > 0 ? channel : 1);
-    pi.dwStreamType   = (DWORD)(subStream ? 1 : 0);   // 0 主码流 / 1 子码流
-    pi.dwLinkMode     = 0;                            // 0 = TCP
-    pi.hPlayWnd       = (__bridge void *)view;
-    pi.bBlocked       = 0;   // 0 = 非阻塞取流，4 宫格一起开不会卡住主线程
-    pi.byProtoType    = 0;                            // 私有协议
+    pi.lChannel        = (LONG)(channel > 0 ? channel : 1);
+    pi.dwStreamType    = (DWORD)(subStream ? 1 : 0);
+    pi.dwLinkMode      = 0;
+    pi.hPlayWnd        = (__bridge void *)view;
+    pi.bBlocked        = 0;
+    pi.byProtoType     = 0;
     pi.dwDisplayBufNum = 1;
 
     LONG h = NET_DVR_RealPlay_V40((LONG)userId, &pi, NULL, NULL);
@@ -316,58 +309,62 @@ static NSString *HikErrText(DWORD code) {
     NET_DVR_StopRealPlay((LONG)handle);
 }
 
++ (BOOL)makeKeyFrame:(NSInteger)userId channel:(int)channel {
+    if (userId < 0) return NO;
+    return NET_DVR_MakeKeyFrame((LONG)userId, (LONG)(channel > 0 ? channel : 1));
+}
+
 // ---------------------------------------------------------------------------
-// 声音 / 对讲
+// 声音
 // ---------------------------------------------------------------------------
 + (BOOL)openSound:(NSInteger)handle {
     if (handle < 0) return NO;
     BOOL ok = NET_DVR_OpenSound((LONG)handle);
     if (ok) gLiveSoundHandle = (LONG)handle;
-    return ok ? YES : NO;
+    return ok;
 }
 
 + (BOOL)closeSound {
     BOOL ok = NET_DVR_CloseSound();
     gLiveSoundHandle = -1;
-    return ok ? YES : NO;
+    return ok;
 }
 
 + (BOOL)setVolume:(NSInteger)handle volume:(int)volume {
     if (handle < 0) return NO;
     int v = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
-    return NET_DVR_Volume((LONG)handle, (WORD)v) ? YES : NO;
+    return NET_DVR_Volume((LONG)handle, (WORD)v);
 }
 
-+ (NSInteger)startVoiceTalk:(NSInteger)userId channel:(int)channel {
+// ---------------------------------------------------------------------------
+// 语音对讲
+// ---------------------------------------------------------------------------
++ (NSInteger)startVoiceCom:(NSInteger)userId channel:(int)channel onData:(void (^)(NSData *, int))onData {
     if (userId < 0) return -1;
-    if (gTalkHandle >= 0) {
-        NET_DVR_StopVoiceCom(gTalkHandle);
-        gTalkHandle = -1;
-    }
-    LONG h = NET_DVR_StartVoiceCom_V30((LONG)userId, (DWORD)(channel > 0 ? channel : 1), 0, NULL, NULL);
+    HikCtxInit();
+
+    LONG h = NET_DVR_StartVoiceCom_MR_V30((LONG)userId, (DWORD)(channel > 0 ? channel : 1),
+                                          HikVoiceCB, NULL);
     if (h < 0) {
-        NSLog(@"[HikMonSDK] StartVoiceCom failed: %@", [self lastErrorText]);
+        NSLog(@"[HikMonSDK] StartVoiceCom_MR_V30 failed err=%u", (unsigned)NET_DVR_GetLastError());
         return -1;
     }
-    gTalkHandle = h;
+    if (onData) {
+        @synchronized (gVoiceBlocks) { gVoiceBlocks[@(h)] = [onData copy]; }
+    }
+    NSLog(@"[HikMonSDK] 对讲句柄=%ld 通道=%d", (long)h, channel);
     return (NSInteger)h;
 }
 
-+ (void)stopVoiceTalk:(NSInteger)talkHandle {
-    LONG h = (talkHandle >= 0) ? (LONG)talkHandle : gTalkHandle;
-    if (h >= 0) {
-        NET_DVR_StopVoiceCom(h);
-    }
-    gTalkHandle = -1;
++ (BOOL)sendVoiceData:(NSInteger)handle data:(NSData *)data {
+    if (handle < 0 || data.length == 0) return NO;
+    return NET_DVR_VoiceComSendData((LONG)handle, (char *)data.bytes, (DWORD)data.length);
 }
 
-// ---------------------------------------------------------------------------
-// 云台
-// ---------------------------------------------------------------------------
-+ (BOOL)ptzControl:(NSInteger)userId channel:(int)channel command:(int)command stop:(BOOL)stop {
-    if (userId < 0) return NO;
-    return NET_DVR_PTZControl_Other((LONG)userId, (LONG)(channel > 0 ? channel : 1),
-                                    (DWORD)command, stop ? 1 : 0) ? YES : NO;
++ (void)stopVoiceCom:(NSInteger)handle {
+    if (handle < 0) return;
+    @synchronized (gVoiceBlocks) { [gVoiceBlocks removeObjectForKey:@(handle)]; }
+    NET_DVR_StopVoiceCom((LONG)handle);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,14 +377,14 @@ static NSString *HikErrText(DWORD code) {
 
     NET_DVR_VOD_PARA para;
     memset(&para, 0, sizeof(para));
-    para.dwSize = sizeof(NET_DVR_VOD_PARA);
+    para.dwSize = sizeof(para);
     para.struIDInfo.dwSize = sizeof(NET_DVR_STREAM_INFO);
     para.struIDInfo.dwChannel = (DWORD)(channel > 0 ? channel : 1);
     HikFillTime(&para.struBeginTime, from);
     HikFillTime(&para.struEndTime, to);
-    para.hWnd = NULL;            // 外部解码（走数据回调 + PlayM4）
+    para.hWnd = NULL;
     para.byDrawFrame = 0;
-    para.byStreamType = 0;       // 主码流
+    para.byStreamType = 0;
 
     LONG h = NET_DVR_PlayBackByTime_V40((LONG)userId, &para);
     if (h < 0) {
@@ -401,16 +398,13 @@ static NSString *HikErrText(DWORD code) {
     ctx.portReady = NO;
     ctx.view = view;
     ctx.totalMs = (int)([to timeIntervalSinceDate:from] * 1000.0);
-    @synchronized (gPlayCtxs) {
-        gPlayCtxs[@(h)] = ctx;
-    }
+    @synchronized (gPlayCtxs) { gPlayCtxs[@(h)] = ctx; }
 
     if (!NET_DVR_SetPlayDataCallBack(h, HikPlayDataCB, (DWORD)h)) {
         NSLog(@"[HikMonSDK] SetPlayDataCallBack failed: %@", [self lastErrorText]);
         [self stopPlayback:(NSInteger)h];
         return -1;
     }
-
     if (!NET_DVR_PlayBackControl(h, NET_DVR_PLAYSTART, 0, NULL)) {
         NSLog(@"[HikMonSDK] PLAYSTART failed: %@", [self lastErrorText]);
         [self stopPlayback:(NSInteger)h];
@@ -426,9 +420,8 @@ static NSString *HikErrText(DWORD code) {
         LONG port = ctx.port;
         BOOL ready = ctx.portReady;
         ctx.portReady = NO;
-        @synchronized (gPlayCtxs) {
-            [gPlayCtxs removeObjectForKey:@(handle)];
-        }
+        @synchronized (gPlayCtxs) { [gPlayCtxs removeObjectForKey:@(handle)]; }
+        NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYSTOP, 0, NULL);
         NET_DVR_StopPlayBack((LONG)handle);
         if (ready && port >= 0) {
             PlayM4_Stop(port);
@@ -443,18 +436,22 @@ static NSString *HikErrText(DWORD code) {
 
 + (BOOL)playbackPause:(NSInteger)handle {
     if (handle < 0) return NO;
-    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYPAUSE, 0, NULL) ? YES : NO;
+    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYPAUSE, 0, NULL);
 }
 
 + (BOOL)playbackResume:(NSInteger)handle {
     if (handle < 0) return NO;
-    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYRESTART, 0, NULL) ? YES : NO;
+    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYRESTART, 0, NULL);
 }
 
-+ (BOOL)playbackSeek:(NSInteger)handle toMillisecond:(int)ms {
++ (BOOL)playbackFast:(NSInteger)handle {
     if (handle < 0) return NO;
-    DWORD in = (DWORD)(ms < 0 ? 0 : ms);
-    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYSETPOS, in, NULL) ? YES : NO;
+    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYFAST, 0, NULL);
+}
+
++ (BOOL)playbackNormal:(NSInteger)handle {
+    if (handle < 0) return NO;
+    return NET_DVR_PlayBackControl((LONG)handle, NET_DVR_PLAYNORMAL, 0, NULL);
 }
 
 + (int)playbackPositionMillisecond:(NSInteger)handle {
@@ -469,9 +466,53 @@ static NSString *HikErrText(DWORD code) {
     return HikCtxFor((LONG)handle).totalMs;
 }
 
+// ---------------------------------------------------------------------------
+// ISAPI 透传
+// ---------------------------------------------------------------------------
++ (NSString *)stdXML:(NSInteger)userId url:(NSString *)url body:(NSString *)body status:(NSString **)statusOut {
+    if (userId < 0) return @"";
+    NSData *urlData = [url dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *bodyData = body.length ? [body dataUsingEncoding:NSUTF8StringEncoding] : nil;
+
+    NET_DVR_XML_CONFIG_INPUT in;
+    memset(&in, 0, sizeof(in));
+    in.dwSize = sizeof(in);
+    in.lpRequestUrl = (void *)urlData.bytes;
+    in.dwRequestUrlLen = (DWORD)urlData.length;
+    in.lpInBuffer = bodyData.length ? (void *)bodyData.bytes : NULL;
+    in.dwInBufferSize = (DWORD)bodyData.length;
+    in.dwRecvTimeOut = 8000;
+
+    NSMutableData *outData = [NSMutableData dataWithLength:256 * 1024];
+    NSMutableData *stData = [NSMutableData dataWithLength:8 * 1024];
+
+    NET_DVR_XML_CONFIG_OUTPUT out;
+    memset(&out, 0, sizeof(out));
+    out.dwSize = sizeof(out);
+    out.lpOutBuffer = outData.mutableBytes;
+    out.dwOutBufferSize = (DWORD)outData.length;
+    out.lpStatusBuffer = stData.mutableBytes;
+    out.dwStatusSize = (DWORD)stData.length;
+
+    BOOL ok = NET_DVR_STDXMLConfig((LONG)userId, &in, &out);
+    if (!ok) {
+        NSLog(@"[HikMonSDK] STDXML %@ failed err=%u", url, (unsigned)NET_DVR_GetLastError());
+        return @"";
+    }
+    DWORD n = out.dwReturnedXMLSize;
+    if (n == 0 || n > outData.length) return @"";
+    if (statusOut) {
+        NSString *st = [[NSString alloc] initWithBytes:stData.bytes
+                                                length:MIN(strlen((const char *)stData.bytes), stData.length)
+                                              encoding:NSUTF8StringEncoding];
+        *statusOut = st ?: @"";
+    }
+    return [[NSString alloc] initWithBytes:outData.bytes length:n encoding:NSUTF8StringEncoding] ?: @"";
+}
+
 @end
 
-#else   // HAS_HIKSDK == 0 —— 空实现，保证工程在没放 SDK 时也能编过
+#else   // HAS_HIKSDK == 0 —— 空实现
 
 @implementation HikMonSDK
 + (BOOL)available { return NO; }
@@ -480,24 +521,29 @@ static NSString *HikErrText(DWORD code) {
 + (unsigned int)lastErrorCode { return 0; }
 + (NSString *)lastErrorText { return @"未集成 HCNetSDK"; }
 + (NSString *)resolveHost:(NSString *)host { return host; }
++ (BOOL)setProtectKey:(NSString *)key { return NO; }
 + (NSInteger)loginHost:(NSString *)h port:(int)p user:(NSString *)u password:(NSString *)pw { return -1; }
 + (void)logout:(NSInteger)userId {}
 + (int)channelCount:(NSInteger)userId { return 1; }
-+ (NSInteger)startRealPlay:(NSInteger)userId channel:(int)c subStream:(BOOL)s view:(UIView *)v { return -1; }
++ (int)channelBase:(NSInteger)userId { return 1; }
++ (NSInteger)startRealPlay:(NSInteger)u channel:(int)c subStream:(BOOL)s view:(UIView *)v { return -1; }
 + (void)stopRealPlay:(NSInteger)handle {}
++ (BOOL)makeKeyFrame:(NSInteger)u channel:(int)c { return NO; }
 + (BOOL)openSound:(NSInteger)handle { return NO; }
 + (BOOL)closeSound { return NO; }
-+ (BOOL)setVolume:(NSInteger)handle volume:(int)volume { return NO; }
-+ (NSInteger)startVoiceTalk:(NSInteger)userId channel:(int)c { return -1; }
-+ (void)stopVoiceTalk:(NSInteger)talkHandle {}
-+ (BOOL)ptzControl:(NSInteger)userId channel:(int)c command:(int)cmd stop:(BOOL)stop { return NO; }
-+ (NSInteger)startPlayback:(NSInteger)userId channel:(int)c from:(NSDate *)f to:(NSDate *)t view:(UIView *)v { return -1; }
++ (BOOL)setVolume:(NSInteger)h volume:(int)v { return NO; }
++ (NSInteger)startVoiceCom:(NSInteger)u channel:(int)c onData:(void (^)(NSData *, int))cb { return -1; }
++ (BOOL)sendVoiceData:(NSInteger)h data:(NSData *)d { return NO; }
++ (void)stopVoiceCom:(NSInteger)handle {}
++ (NSInteger)startPlayback:(NSInteger)u channel:(int)c from:(NSDate *)f to:(NSDate *)t view:(UIView *)v { return -1; }
 + (void)stopPlayback:(NSInteger)handle {}
 + (BOOL)playbackPause:(NSInteger)handle { return NO; }
 + (BOOL)playbackResume:(NSInteger)handle { return NO; }
-+ (BOOL)playbackSeek:(NSInteger)handle toMillisecond:(int)ms { return NO; }
++ (BOOL)playbackFast:(NSInteger)handle { return NO; }
++ (BOOL)playbackNormal:(NSInteger)handle { return NO; }
 + (int)playbackPositionMillisecond:(NSInteger)handle { return 0; }
 + (int)playbackTotalMillisecond:(NSInteger)handle { return 0; }
++ (NSString *)stdXML:(NSInteger)u url:(NSString *)url body:(NSString *)b status:(NSString **)s { return @""; }
 @end
 
 #endif
