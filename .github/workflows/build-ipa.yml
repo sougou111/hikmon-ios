@@ -7,7 +7,13 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-arm64
+    # macOS 镜像排队太狠时会被直接取消，这里三个镜像并行，谁先拿到机器谁出包
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-14, macos-13]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,7 +64,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ matrix.os }}
           path: /tmp/xcodebuild.log
           retention-days: 7
 
@@ -81,8 +87,9 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: HikMon-unsigned-ipa
+          name: HikMon-unsigned-ipa-${{ matrix.os }}
           path: HikMon-unsigned.ipa
           retention-days: 30
+
 
 
