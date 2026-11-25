@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,4 +84,5 @@ jobs:
           name: HikMon-unsigned-ipa
           path: HikMon-unsigned.ipa
           retention-days: 30
+
 
