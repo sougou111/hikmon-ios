@@ -164,7 +164,7 @@ struct AppShell: View {
         case .playback:  PlaybackPage(state: state)
         case .settings:  SettingsPage(state: state)
         case .diag:      DiagPage(state: state)
-        case .logs:      LogsPage(state: state)
+        case .logs:      LogsPage()
         }
     }
 

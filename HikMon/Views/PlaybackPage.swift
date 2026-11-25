@@ -139,7 +139,6 @@ struct TimeBarView: View {
     var body: some View {
         GeometryReader { geo in
             let h = max(120, geo.size.height)
-            let w = geo.size.width
 
             Canvas { ctx, size in
                 draw(ctx: &ctx, size: size)
