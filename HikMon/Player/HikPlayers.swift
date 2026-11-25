@@ -68,7 +68,8 @@ final class LivePlayer: ObservableObject, Identifiable {
                 let err = HikMonSDK.lastErrorText()
                 self.handle = -1
                 if !retry {
-                    session.ensureLogin(forceRelogin: true)
+                    // attempt(retry: true) 内部会在后台队列强制重登，别在主线程阻塞登录
+                    self.status = "重试中…"
                     self.attempt(retry: true)
                 } else {
                     self.failed = true
@@ -170,7 +171,7 @@ final class LiveGrid: ObservableObject {
 
     init(device: Device) {
         self.device = device
-        let chans = Array(device.channels.prefix(8))
+        let chans = Array(device.channels.prefix(16))
         self.players = chans.map { LivePlayer(device: device, channel: $0) }
     }
 }
