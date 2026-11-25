@@ -14,6 +14,7 @@ final class LiveCell: ObservableObject, Identifiable {
 
     private(set) var handle: Int = -1
     private var started = false
+    private var pending = false
     private let withSound: Bool
     private let autoStart: Bool
 
@@ -24,8 +25,11 @@ final class LiveCell: ObservableObject, Identifiable {
         self.withSound = sound
         self.autoStart = autoStart
         self.canvas.onAttach = { [weak self] in
-            guard let self, self.autoStart else { return }
-            self.start()
+            guard let self else { return }
+            if self.pending || self.autoStart {
+                self.pending = false
+                self.begin()
+            }
         }
     }
 
@@ -34,20 +38,33 @@ final class LiveCell: ObservableObject, Identifiable {
         self.tip = tip
     }
 
+    /// 真正开流前必须等 canvas 进 window，否则 SDK 拿不到可用的绘制层
     func start() {
         guard !started, channel > 0 else { return }
         started = true
         tip = "连接中…"
+        if canvas.window == nil {
+            pending = true
+            return
+        }
+        begin()
+    }
+
+    private func begin() {
+        guard channel > 0, handle < 0 else { return }
         let session = HikSessions.shared.session(for: device)
         let ch = channel
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             guard session.ensureLogin() >= 0 else {
-                DispatchQueue.main.async { self.tip = "登录失败"; self.started = false }
+                DispatchQueue.main.async {
+                    self.tip = "登录失败"
+                    self.started = false
+                }
                 return
             }
             DispatchQueue.main.async {
-                guard self.started else { return }
+                guard self.started, self.handle < 0 else { return }
                 let h = session.openLive(channel: ch, view: self.canvas.renderView,
                                          subStream: self.device.streamType == 1)
                 if h >= 0 {
@@ -69,6 +86,7 @@ final class LiveCell: ObservableObject, Identifiable {
 
     func stop() {
         started = false
+        pending = false
         live = false
         if handle >= 0 {
             let h = handle
@@ -81,7 +99,6 @@ final class LiveCell: ObservableObject, Identifiable {
 
     func restart() {
         stop()
-        started = false
         start()
     }
 }

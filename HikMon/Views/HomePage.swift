@@ -65,14 +65,13 @@ private struct DeviceCard: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             LazyVGrid(columns: columns, spacing: 6) {
-                ForEach(Array(block.cells.enumerated()), id: \.element.id) { idx, cell in
+                ForEach(block.cells) { cell in
                     CellView(cell: cell,
                              showFull: cell.channel > 0,
                              onFull: { openLive(cell.channel) },
                              onTap: { if cell.channel > 0 { openLive(cell.channel) } },
                              onLong: { if cell.channel > 0 { openPlayback(cell.channel) } })
                         .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                        .id("\(device.id)-\(idx)-\(cell.channel)")
                 }
             }
         }

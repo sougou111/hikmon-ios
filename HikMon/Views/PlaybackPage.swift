@@ -62,12 +62,12 @@ private struct PlaybackContent: View {
                 .padding(.bottom, 6)
 
             HStack(spacing: 6) {
-                ForEach(Array(jumps.enumerated()), id: \.offset) { item in
+                ForEach(jumps.indices, id: \.self) { i in
                     Button {
-                        time = time.addingTimeInterval(Double(item.element.1) * 60)
+                        time = time.addingTimeInterval(Double(jumps[i].1) * 60)
                         pb.seek(to: time)
                     } label: {
-                        Chip(text: item.element.0).frame(maxWidth: .infinity)
+                        Chip(text: jumps[i].0, stretch: true)
                     }
                     .buttonStyle(.plain)
                 }
