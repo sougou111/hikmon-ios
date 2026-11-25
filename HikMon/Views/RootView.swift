@@ -4,6 +4,7 @@ struct RootView: View {
     @EnvironmentObject private var store: DeviceStore
     @State private var editing: Device?
     @State private var isNew = false
+    @State private var showLog = false
 
     var body: some View {
         NavigationStack {
@@ -45,11 +46,19 @@ struct RootView: View {
             .navigationTitle("海康监控")
             .toolbar {
                 Button {
+                    showLog = true
+                } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                }
+                Button {
                     isNew = true
                     editing = Device()
                 } label: {
                     Image(systemName: "plus")
                 }
+            }
+            .sheet(isPresented: $showLog) {
+                HikLogView()
             }
             .sheet(item: $editing) { d in
                 DeviceEditView(device: d, isNew: isNew) { saved in

@@ -13,6 +13,7 @@
 | 单通道 | SDK 直渲染 + 双指缩放 1–4×、单指拖动、双击复位 + 「声音」按钮（`NET_DVR_OpenSound` / `NET_DVR_CloseSound()`）+ 「按住说话」（`NET_DVR_StartVoiceCom_V30` / `NET_DVR_StopVoiceCom(handle)`） |
 | 回放 | `NET_DVR_PlayBackByTime_V40` → `NET_DVR_SetPlayDataCallBack` → `NET_DVR_PlayBackControl(PLAYSTART)` → PlayM4 解码到 `UIView`；播放/暂停/进度拖动 |
 | 会话复用 | 同一设备（host+port+user+pass）只登录一次，所有通道共用 `userId`；登录或开流失败自动清会话重登一次 |
+| 诊断日志 | 启动即把 stderr（含 HCNetSDK / PlayM4 的 NSLog）接管进环形缓冲，右上角放大镜按钮实时看、一键分享；回放位置连续 2 秒不动会自动记一条「回放停滞」 |
 
 ## 目录
 

@@ -18,6 +18,7 @@ final class LivePlayer: ObservableObject, Identifiable {
     private(set) var handle: Int = -1
     private(set) var talkHandle: Int = -1
     private var started = false
+    private var talkPending = false
 
     var id: Int { channel }
 
@@ -63,9 +64,11 @@ final class LivePlayer: ObservableObject, Identifiable {
                     self.handle = h
                     self.failed = false
                     self.status = ""
+                    HikLog.shared.add("实时 ch\(channel) 开流成功 handle=\(h)")
                     return
                 }
                 let err = HikMonSDK.lastErrorText()
+                HikLog.shared.add("实时 ch\(channel) 开流失败：\(err)（retry=\(retry)）")
                 self.handle = -1
                 if !retry {
                     // attempt(retry: true) 内部会在后台队列强制重登，别在主线程阻塞登录
@@ -122,13 +125,16 @@ final class LivePlayer: ObservableObject, Identifiable {
     // MARK: 对讲
 
     func startTalk() {
-        guard !talking else { return }
+        guard !talking, !talkPending else { return }
+        talkPending = true
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
             guard let self = self else { return }
             guard granted else {
                 DispatchQueue.main.async {
+                    self.talkPending = false
                     self.talking = false
                     self.status = "没有麦克风权限，去 设置 → 隐私 → 麦克风 打开"
+                    HikLog.shared.add("对讲：麦克风权限被拒")
                 }
                 return
             }
@@ -136,15 +142,20 @@ final class LivePlayer: ObservableObject, Identifiable {
             let channel = self.channel
             DispatchQueue.global(qos: .userInitiated).async {
                 guard session.ensureLogin() else {
-                    DispatchQueue.main.async { self.status = session.lastError }
+                    DispatchQueue.main.async {
+                        self.talkPending = false
+                        self.status = session.lastError
+                    }
                     return
                 }
                 let th = Int(HikMonSDK.startVoiceTalk(session.userId, channel: Int32(channel)))
                 DispatchQueue.main.async {
+                    self.talkPending = false
                     if th >= 0 {
                         self.talkHandle = th
                         self.talking = true
                         self.status = ""
+                        HikLog.shared.add("对讲 ch\(channel) 开始 handle=\(th)")
                     } else {
                         self.talking = false
                         self.status = "对讲失败：\(HikMonSDK.lastErrorText())"
@@ -155,9 +166,11 @@ final class LivePlayer: ObservableObject, Identifiable {
     }
 
     func stopTalk() {
+        talkPending = false
         if talkHandle >= 0 {
             HikMonSDK.stopVoiceTalk(talkHandle)
             talkHandle = -1
+            HikLog.shared.add("对讲结束")
         }
         talking = false
     }
@@ -189,6 +202,8 @@ final class PlaybackEngine: ObservableObject {
 
     private(set) var handle: Int = -1
     private var timer: Timer?
+    private var lastPos: Double = -1
+    private var stallTicks = 0
 
     private var session: HikSession { HikSessions.shared.session(for: device) }
 
@@ -198,6 +213,8 @@ final class PlaybackEngine: ObservableObject {
         stop()
         duration = seconds
         position = 0
+        lastPos = -1
+        stallTicks = 0
         status = "登录中…"
 
         let session = self.session
@@ -221,9 +238,11 @@ final class PlaybackEngine: ObservableObject {
                     self.handle = h
                     self.playing = true
                     self.status = ""
+                    HikLog.shared.add("回放 ch\(channel) 开始 handle=\(h) 时长=\(Int(seconds))s")
                     self.beginTimer()
                 } else {
                     self.status = "回放失败：\(HikMonSDK.lastErrorText())"
+                    HikLog.shared.add("回放 ch\(channel) 失败：\(HikMonSDK.lastErrorText())")
                 }
             }
         }
@@ -242,6 +261,16 @@ final class PlaybackEngine: ObservableObject {
         if total > 0 { duration = Double(total) / 1000.0 }
         let pos = Double(HikMonSDK.playbackPositionMillisecond(handle)) / 1000.0
         if pos >= 0 { position = pos }
+        // 卡顿诊断：播放中位置连续 2 秒不动就记一条，用户可以直接把日志发出来
+        if playing && pos > 0 && abs(pos - lastPos) < 0.01 {
+            stallTicks += 1
+            if stallTicks == 4 {
+                HikLog.shared.add("回放停滞：位置卡在 \(String(format: "%.1f", pos))s，SDK错误=\(HikMonSDK.lastErrorText())")
+            }
+        } else {
+            stallTicks = 0
+        }
+        lastPos = pos
         if duration > 0 && position >= duration - 0.5 {
             stop()
             status = "播放结束"

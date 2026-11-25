@@ -98,12 +98,12 @@ static void CALLBACK HikPlayDataCB(LONG lPlayHandle, DWORD dwDataType, BYTE *pBu
                 return;
             }
             PlayM4_SetStreamOpenMode(port, HIK_STREAME_REALTIME);
-            if (dwBufSize > 0) {
-                if (!PlayM4_OpenStream(port, pBuffer, dwBufSize, 2 * 1024 * 1024)) {
-                    NSLog(@"[HikMonSDK] PlayM4_OpenStream failed err=%u", (unsigned)PlayM4_GetLastError(port));
-                    PlayM4_FreePort(port);
-                    return;
-                }
+            // 有的固件第一个 SYSHEAD 包长为 0，也必须 OpenStream，否则后面 InputData 全部失败
+            if (!PlayM4_OpenStream(port, dwBufSize > 0 ? pBuffer : NULL, dwBufSize, 4 * 1024 * 1024)) {
+                NSLog(@"[HikMonSDK] PlayM4_OpenStream failed err=%u (head=%u)",
+                      (unsigned)PlayM4_GetLastError(port), (unsigned)dwBufSize);
+                PlayM4_FreePort(port);
+                return;
             }
             ctx.port = port;
             ctx.portReady = YES;
