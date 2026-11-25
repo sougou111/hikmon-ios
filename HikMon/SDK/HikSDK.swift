@@ -1,103 +1,112 @@
 import Foundation
 import UIKit
-import SwiftUI
 
-/// 统一的后端抽象：SDK 可用时走 SDK（8000 私有协议），否则回落到 ISAPI+RTSP
-enum Backend {
-    case sdk
-    case rtsp
+// MARK: - SDK 元信息
+
+enum HikSDKInfo {
+    static var available: Bool { HikMonSDK.available() }
+    static var version: String { HikMonSDK.sdkVersion() }
+    static var lastError: String { HikMonSDK.lastErrorText() }
 }
+
+// MARK: - 单设备会话（登录一次，多通道复用）
 
 final class HikSession {
     let device: Device
+
     private(set) var userId: Int = -1
-    private(set) var realPlayHandle: Int = -1
-    private(set) var playbackHandle: Int = -1
+    private(set) var serverChannelCount: Int = 0
+    private(set) var lastError: String = ""
 
-    init(device: Device) {
-        self.device = device
-    }
+    /// 4 宫格会并发的调 ensureLogin，这里串行化，避免同一设备重复登录
+    private let loginLock = NSLock()
 
-    static var sdkReady: Bool { HCNetSDKBridge.sdkAvailable() }
-    static var sdkVersion: String { HCNetSDKBridge.sdkVersion() }
+    init(device: Device) { self.device = device }
 
-    /// 走 SDK 登录（端口用 device.sdkPort，默认 8000）
+    var isLoggedIn: Bool { userId >= 0 }
+
+    /// 登录（幂等）。forceRelogin = true 时先登出再登。
     @discardableResult
-    func loginSDK() -> Bool {
-        guard HikSession.sdkReady else { return false }
-        HCNetSDKBridge.globalInit()
-        let uid = HCNetSDKBridge.loginHost(device.host, port: Int32(device.sdkPort),
-                                           user: device.user, password: device.pass)
+    func ensureLogin(forceRelogin: Bool = false) -> Bool {
+        loginLock.lock()
+        defer { loginLock.unlock() }
+
+        if !forceRelogin, userId >= 0 { return true }
+        if userId >= 0 {
+            HikMonSDK.logout(userId)
+            userId = -1
+        }
+        HikMonSDK.globalInit()
+
+        var host = device.host
+        if device.resolveMode == .localDNS, let ip = HikMonSDK.resolveHost(device.host) {
+            host = ip
+        }
+
+        let uid = HikMonSDK.loginHost(host,
+                                      port: Int32(device.sdkPort),
+                                      user: device.user,
+                                      password: device.pass)
+        guard uid >= 0 else {
+            lastError = HikMonSDK.lastErrorText()
+            return false
+        }
         userId = uid
-        return uid >= 0
+        let n = Int(HikMonSDK.channelCount(uid))
+        if n > 0 { serverChannelCount = n }
+        lastError = ""
+        return true
     }
 
     func logout() {
-        stopRealPlay()
-        stopPlayback()
-        if userId >= 0 { HCNetSDKBridge.logout(userId) }
+        if userId >= 0 { HikMonSDK.logout(userId) }
         userId = -1
     }
 
-    // MARK: 实时
-
-    func startRealPlay(channel: Int, sub: Bool, in view: UIView) -> Bool {
-        guard userId >= 0 else { return false }
-        stopRealPlay()
-        let h = HCNetSDKBridge.startRealPlay(userId, channel: Int32(channel),
-                                             streamType: sub ? 1 : 0, view: view)
-        realPlayHandle = h
-        return h >= 0
+    /// 开一路实时预览，返回 realplay 句柄
+    func openLive(channel: Int, view: UIView) -> Int {
+        guard userId >= 0 else { return -1 }
+        return Int(HikMonSDK.startRealPlay(userId,
+                                           channel: Int32(channel),
+                                           subStream: device.useSubStream,
+                                           view: view))
     }
-
-    func stopRealPlay() {
-        if realPlayHandle >= 0 { HCNetSDKBridge.stopRealPlay(realPlayHandle) }
-        realPlayHandle = -1
-    }
-
-    func openSound() -> Bool { HCNetSDKBridge.openSound(realPlayHandle) }
-    func closeSound() -> Bool { HCNetSDKBridge.closeSound(realPlayHandle) }
-
-    func startTalk() -> Bool { HCNetSDKBridge.startTalk(userId) }
-    func stopTalk() { HCNetSDKBridge.stopTalk() }
-
-    func ptz(cmd: Int, stop: Bool) -> Bool {
-        HCNetSDKBridge.ptz(userId, channel: Int32(ptzChannel), cmd: Int32(cmd), stop: stop)
-    }
-    var ptzChannel: Int = 1
-
-    // MARK: 回放
-
-    func startPlayback(channel: Int, from: Date, to: Date, in view: UIView) -> Bool {
-        guard userId >= 0 else { return false }
-        stopPlayback()
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        let h = HCNetSDKBridge.startPlayback(userId, channel: Int32(channel),
-                                             startTime: f.string(from: from),
-                                             endTime: f.string(from: to),
-                                             view: view)
-        playbackHandle = h
-        return h >= 0
-    }
-
-    func stopPlayback() {
-        if playbackHandle >= 0 { HCNetSDKBridge.stopPlayback(playbackHandle) }
-        playbackHandle = -1
-    }
-
-    func pause() { HCNetSDKBridge.playbackPause(playbackHandle) }
-    func resume() { HCNetSDKBridge.playbackResume(playbackHandle) }
-    func seek(_ seconds: Int) { HCNetSDKBridge.playbackSeek(playbackHandle, seconds: Int32(seconds)) }
 }
 
-/// SDK 的画面容器：真实 UIView，直接交给 SDK 渲染
-struct SDKVideoView: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView()
-        v.backgroundColor = .black
-        v.contentMode = .scaleAspectFit
-        return v
+// MARK: - 会话池（同一设备只登录一次）
+
+final class HikSessions {
+    static let shared = HikSessions()
+
+    private var map: [String: HikSession] = [:]
+    private let lock = NSLock()
+
+    private func key(_ d: Device) -> String {
+        "\(d.host)|\(d.sdkPort)|\(d.user)|\(d.pass)|\(d.resolveMode.rawValue)"
     }
-    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    func session(for device: Device) -> HikSession {
+        lock.lock()
+        defer { lock.unlock() }
+        if let s = map[key(device)] { return s }
+        let s = HikSession(device: device)
+        map[key(device)] = s
+        return s
+    }
+
+    func drop(for device: Device) {
+        lock.lock()
+        let k = key(device)
+        let s = map.removeValue(forKey: k)
+        lock.unlock()
+        s?.logout()
+    }
+
+    func closeAll() {
+        lock.lock()
+        let all = map.values
+        map.removeAll()
+        lock.unlock()
+        all.forEach { $0.logout() }
+    }
 }

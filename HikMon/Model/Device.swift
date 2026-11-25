@@ -1,59 +1,58 @@
 import Foundation
 
-// MARK: - 数据模型
+// MARK: - 地址解析模式
+
+enum ResolveMode: String, Codable, CaseIterable, Identifiable {
+    case direct      // 地址原样交给 SDK（IP 或设备自己能解析的名字）
+    case localDNS    // 先在本机用 getaddrinfo 解析成 IP，再把 IP 交给 SDK
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .direct:   return "IP / 直连"
+        case .localDNS: return "域名（本机解析）"
+        }
+    }
+}
+
+// MARK: - 通道
 
 struct Camera: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
-    var channel: Int          // NVR/IPC 上的通道号，从 1 开始
+    var channel: Int
     var name: String
 }
 
+// MARK: - 设备
+
 struct Device: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
-    var name: String
-    var host: String            // IP 或域名
-    var isapiPort: Int = 80
-    var rtspPort: Int = 554
-    var sdkPort: Int = 8000     // 海康 SDK 私有协议端口（iVMS 4500+ 用的就是它）
+    var name: String = ""
+    var host: String = ""
+    var sdkPort: Int = 8000
     var user: String = "admin"
     var pass: String = ""
-    var useSubStream: Bool = false
+    var useSubStream: Bool = false          // 主/子码流
+    var resolveMode: ResolveMode = .direct
+    var channelCount: Int = 4
     var cameras: [Camera] = []
 
-    /// 海康 RTSP 通道编号：通道 1 主码流 = 101，子码流 = 102
-    func streamID(_ channel: Int, sub: Bool) -> Int {
-        channel * 100 + (sub ? 2 : 1)
+    var title: String { name.isEmpty ? (host.isEmpty ? "未命名设备" : host) : name }
+
+    var subtitle: String { "\(host):\(sdkPort) · \(user) · \(channelCount) 通道" }
+
+    /// 网格要显示的通道号：优先用户配置的通道，否则 1…channelCount
+    var channels: [Int] {
+        if !cameras.isEmpty { return cameras.map(\.channel).sorted() }
+        let n = max(1, channelCount)
+        return Array(1...n)
     }
 
-    var isapiBase: String {
-        let scheme = isapiPort == 443 ? "https" : "http"
-        return "\(scheme)://\(host):\(isapiPort)"
+    func name(for channel: Int) -> String {
+        cameras.first(where: { $0.channel == channel })?.name ?? "通道 \(channel)"
     }
 
-    private func encoded(_ s: String) -> String {
-        s.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) ?? s
-    }
-
-    /// 实时预览
-    func liveURL(channel: Int) -> String {
-        let id = streamID(channel, sub: useSubStream)
-        return "rtsp://\(encoded(user)):\(encoded(pass))@\(host):\(rtspPort)/Streaming/Channels/\(id)"
-    }
-
-    /// 回放：两天内的任意时间段，海康用 tracks 接口
-    func playbackURL(channel: Int, from: Date, to: Date) -> String {
-        let id = streamID(channel, sub: false)
-        return "rtsp://\(encoded(user)):\(encoded(pass))@\(host):\(rtspPort)/Streaming/tracks/\(id)?starttime=\(Self.hikTime(from))&endtime=\(Self.hikTime(to))"
-    }
-
-    /// 海康时间格式：20261122T101500Z（UTC）
-    static func hikTime(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        return f.string(from: d)
-    }
+    func streamTitle(_ ch: Int) -> String { "CH\(ch)" }
 }
 
 // MARK: - 本地存储
@@ -61,7 +60,7 @@ struct Device: Identifiable, Codable, Hashable {
 final class DeviceStore: ObservableObject {
     @Published var devices: [Device] = [] { didSet { save() } }
 
-    private let key = "hikmon.devices.v1"
+    private let key = "hikmon.devices.v2"
 
     init() { load() }
 
@@ -82,4 +81,5 @@ final class DeviceStore: ObservableObject {
     }
 
     func remove(_ d: Device) { devices.removeAll { $0.id == d.id } }
+    func remove(id: UUID) { devices.removeAll { $0.id == id } }
 }

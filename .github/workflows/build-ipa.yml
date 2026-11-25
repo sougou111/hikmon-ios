@@ -12,6 +12,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 仓库里只放 3 个 30MB 分片（GitHub 单文件上限 100MB，也别把 200MB 库直接塞仓库）
+      - name: Restore HCNetSDK static libraries
+        run: |
+          set -e
+          cd HikMon/SDK/lib
+          ls -l
+          cat sdk.part* > /tmp/sdk.zip
+          unzip -o -q /tmp/sdk.zip -d /tmp/sdkx
+          find /tmp/sdkx -type f -name '*.a' -exec cp -f {} . \;
+          # 官方的 AIP.a 没有 lib 前缀，-lAIP 找不到，这里补一份带前缀的
+          if [ -f AIP.a ] && [ ! -f libAIP.a ]; then cp -f AIP.a libAIP.a; fi
+          echo "--- restored ---"
+          ls -l *.a
+          for f in libHCNetSDK.a libHCCore.a libplayctrl.a; do
+            test -s "$f" || { echo "missing $f"; exit 1; }
+          done
+
       - name: Show Xcode version
         run: xcodebuild -version
 
@@ -23,24 +40,11 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Cache CocoaPods
-        uses: actions/cache@v4
-        with:
-          path: |
-            Pods
-            ~/Library/Caches/CocoaPods
-          key: pods-${{ hashFiles('Podfile') }}
-
-      - name: Install pods (MobileVLCKit)
-        run: |
-          pod install --repo-update
-          ls -d Pods/MobileVLCKit* || true
-
       - name: Build (unsigned)
         run: |
           set -o pipefail
           xcodebuild \
-            -workspace HikMon.xcworkspace \
+            -project HikMon.xcodeproj \
             -scheme HikMon \
             -sdk iphoneos \
             -configuration Release \
@@ -48,7 +52,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tail -n 80
+            build 2>&1 | tee /tmp/xcodebuild.log | tail -n 150
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/xcodebuild.log
+          retention-days: 7
 
       - name: Package unsigned IPA
         run: |
@@ -58,10 +70,13 @@ jobs:
             ls -R build/Build/Products || true
             exit 1
           fi
+          ls -la "$APP" | head -30
+          codesign -dv "$APP" 2>&1 || echo "(unsigned, 正常)"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry HikMon-unsigned.ipa Payload
           du -sh HikMon-unsigned.ipa
+          unzip -l HikMon-unsigned.ipa | head -20
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4

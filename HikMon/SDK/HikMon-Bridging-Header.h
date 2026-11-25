@@ -1,11 +1,12 @@
 //
 //  HikMon-Bridging-Header.h
-//  Swift 侧访问 ObjC 桥接层
+//  Swift 侧只能看到这个 ObjC 门面，绝不能把 HCNetSDK.h 塞进来
+//  （那个头会 #define BOOL int / #define NULL 0，进了桥接头会毁掉 Foundation）
 //
 
 #ifndef HikMon_Bridging_Header_h
 #define HikMon_Bridging_Header_h
 
-#import "HCNetSDKBridge.h"
+#import "HikMonSDK.h"
 
 #endif

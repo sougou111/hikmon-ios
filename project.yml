@@ -1,4 +1,5 @@
 name: HikMon
+
 options:
   bundleIdPrefix: com.ynvr
   deploymentTarget:
@@ -13,6 +14,10 @@ settings:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
     ENABLE_BITCODE: NO
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    CLANG_CXX_LANGUAGE_STANDARD: "gnu++17"
+    GCC_C_LANGUAGE_STANDARD: "gnu11"
 
 targets:
   HikMon:
@@ -22,6 +27,23 @@ targets:
       - path: HikMon
         excludes:
           - "Resources/Info.plist"
+          - "SDK/inc"
+          - "SDK/lib"
+    dependencies:
+      - sdk: AVFoundation.framework
+      - sdk: AVFAudio.framework
+      - sdk: AudioToolbox.framework
+      - sdk: VideoToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: CoreGraphics.framework
+      - sdk: QuartzCore.framework
+      - sdk: OpenGLES.framework
+      - sdk: GLKit.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CFNetwork.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ynvr.hikmon
@@ -31,15 +53,32 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: HikMon/SDK/HikMon-Bridging-Header.h
         GCC_PREPROCESSOR_DEFINITIONS:
           - "$(inherited)"
-          - "HAS_HIKSDK=0"        # 放入官方 HCNetSDK 后改成 1
-        # ---- 集成海康 SDK 后取消下面几行注释 ----
-        # FRAMEWORK_SEARCH_PATHS:
-        #   - "$(inherited)"
-        #   - "$(SRCROOT)/HikMon/SDK"
-        # OTHER_LDFLAGS:
-        #   - "$(inherited)"
-        #   - "-framework"
-        #   - "HCNetSDK"
+          - "HAS_HIKSDK=1"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/HikMon/SDK/inc"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/HikMon/SDK/lib"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lHCNetSDK"
+          - "-lHCCore"
+          - "-lsip"
+          - "-lAudioEngine"
+          - "-lopus"
+          - "-lAIP"
+          - "-laac"
+          - "-laacld"
+          - "-lssl"
+          - "-lcrypto"
+          - "-lNPQos"
+          - "-lplayctrl"
+          - "-lSystemTransform"
+          - "-lz"
+          - "-liconv"
+          - "-lc++"
+          - "-lbz2"
 
 schemes:
   HikMon:

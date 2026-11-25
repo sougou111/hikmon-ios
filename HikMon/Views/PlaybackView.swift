@@ -1,20 +1,24 @@
 import SwiftUI
+import Combine
 
+/// 回放：按时间点播（PlayBackByTime_V40 + 数据回调 + PlayM4 解码）
 struct PlaybackView: View {
     let device: Device
-    let cameras: [Camera]
 
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var box = PlayerBox()
-    @State private var channel: Int
-    @State private var start: Date = Calendar.current.date(byAdding: .hour, value: -1, to: Date()) ?? Date()
-    @State private var hours: Int = 2
-    @State private var err = ""
+    @StateObject private var engine: PlaybackEngine
 
-    init(device: Device, cameras: [Camera]) {
+    @State private var channel: Int
+    @State private var startDate: Date
+    @State private var minutes: Int = 30
+    @State private var sliderValue: Double = 0
+    @State private var dragging = false
+
+    init(device: Device) {
         self.device = device
-        self.cameras = cameras
-        _channel = State(initialValue: cameras.first?.channel ?? 1)
+        _engine = StateObject(wrappedValue: PlaybackEngine(device: device))
+        _channel = State(initialValue: device.channels.first ?? 1)
+        _startDate = State(initialValue: Date().addingTimeInterval(-1800))
     }
 
     var body: some View {
@@ -22,56 +26,104 @@ struct PlaybackView: View {
             VStack(spacing: 0) {
                 ZStack {
                     Color.black
-                    VLCVideoView(player: box.player)
-                    if !box.isPlaying && !box.failed {
-                        ProgressView().tint(.white)
-                    }
-                    if box.failed {
-                        Text(box.stateText).font(.caption).foregroundStyle(.orange)
+                    SDKCanvasRepresentable(canvas: engine.canvas)
+                    if engine.handle < 0 {
+                        VideoPlaceholder(text: engine.status.isEmpty ? "还没有开始回放" : engine.status)
                     }
                 }
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
 
-                Form {
-                    if cameras.count > 1 {
-                        Picker("通道", selection: $channel) {
-                            ForEach(cameras) { c in
-                                Text("CH\(c.channel) \(c.name)").tag(c.channel)
+                VStack(spacing: 10) {
+                    HStack(spacing: 14) {
+                        Button {
+                            engine.togglePause()
+                        } label: {
+                            Image(systemName: engine.playing ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 34))
+                        }
+                        .disabled(engine.handle < 0)
+
+                        Text(timeText(engine.position))
+                            .font(.system(.caption, design: .monospaced))
+                            .monospacedDigit()
+
+                        Slider(value: $sliderValue,
+                               in: 0...max(engine.duration, 1),
+                               onEditingChanged: { editing in
+                            dragging = editing
+                            if !editing { engine.seek(to: sliderValue) }
+                        })
+                        .disabled(engine.handle < 0)
+
+                        Text(timeText(engine.duration))
+                            .font(.system(.caption, design: .monospaced))
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 14)
+
+                    Form {
+                        Section("点播区间") {
+                            if device.channels.count > 1 {
+                                Picker("通道", selection: $channel) {
+                                    ForEach(device.channels, id: \.self) { ch in
+                                        Text("CH\(ch) \(device.name(for: ch))").tag(ch)
+                                    }
+                                }
+                            }
+                            DatePicker("开始时间", selection: $startDate,
+                                       displayedComponents: [.date, .hourAndMinute])
+                            Picker("时长", selection: $minutes) {
+                                Text("15 分钟").tag(15)
+                                Text("30 分钟").tag(30)
+                                Text("1 小时").tag(60)
+                                Text("2 小时").tag(120)
+                                Text("4 小时").tag(240)
+                            }
+                        }
+
+                        Section {
+                            Button {
+                                engine.start(channel: channel,
+                                             from: startDate,
+                                             seconds: TimeInterval(minutes * 60))
+                            } label: {
+                                Label("开始回放", systemImage: "play.rectangle.fill")
+                            }
+                            if !engine.status.isEmpty {
+                                Text(engine.status)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                    DatePicker("开始时间", selection: $start, displayedComponents: [.date, .hourAndMinute])
-                    Picker("时长", selection: $hours) {
-                        Text("1 小时").tag(1)
-                        Text("2 小时").tag(2)
-                        Text("4 小时").tag(4)
-                    }
-                    Button {
-                        play()
-                    } label: {
-                        Label("播放这段录像", systemImage: "play.circle.fill")
-                    }
-                    if !err.isEmpty {
-                        Text(err).font(.caption).foregroundStyle(.red)
-                    }
+                    .frame(maxHeight: 300)
                 }
-                .frame(maxHeight: 320)
+                .background(Color(.systemGroupedBackground))
             }
             .navigationTitle("回放")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { box.stop(); dismiss() }
+                    Button("关闭") {
+                        engine.stop()
+                        dismiss()
+                    }
                 }
             }
-            .onDisappear { box.stop() }
+            .onReceive(engine.$position) { v in
+                if !dragging { sliderValue = min(v, max(engine.duration, 1)) }
+            }
+            .onDisappear { engine.stop() }
         }
     }
 
-    private func play() {
-        let end = start.addingTimeInterval(TimeInterval(hours * 3600))
-        let url = device.playbackURL(channel: channel, from: start, to: end)
-        box.play(url)
-        err = ""
+    private func timeText(_ t: Double) -> String {
+        guard t.isFinite, t > 0 else { return "00:00" }
+        let total = Int(t)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
     }
 }

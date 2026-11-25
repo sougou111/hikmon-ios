@@ -1,16 +1,16 @@
 import SwiftUI
 
+/// 新增 / 编辑合并成一个设置页
 struct DeviceEditView: View {
     @Environment(\.dismiss) private var dismiss
+
     @State private var device: Device
     private let isNew: Bool
     private let onSave: (Device) -> Void
 
-    @State private var busy = false
-    @State private var message = ""
-    @State private var ok = false
-    @State private var diagBusy = false
-    @State private var diagLines: [String] = []
+    @State private var testing = false
+    @State private var result = ""
+    @State private var resultOK = false
 
     init(device: Device, isNew: Bool, onSave: @escaping (Device) -> Void) {
         _device = State(initialValue: device)
@@ -23,23 +23,21 @@ struct DeviceEditView: View {
             Form {
                 Section("设备") {
                     TextField("名称（可选）", text: $device.name)
-                    TextField("IP / 域名", text: $device.host)
+                    TextField("地址：IP 或域名", text: $device.host)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     HStack {
-                        Text("ISAPI 端口")
+                        Text("SDK 端口")
                         Spacer()
-                        TextField("80", value: $device.isapiPort, format: .number)
+                        TextField("8000", value: $device.sdkPort, format: .number)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    HStack {
-                        Text("RTSP 端口")
-                        Spacer()
-                        TextField("554", value: $device.rtspPort, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
+                    Picker("地址解析", selection: $device.resolveMode) {
+                        ForEach(ResolveMode.allCases) { m in
+                            Text(m.title).tag(m)
+                        }
                     }
                 }
 
@@ -50,137 +48,86 @@ struct DeviceEditView: View {
                     SecureField("密码", text: $device.pass)
                 }
 
-                Section {
-                    Toggle("使用子码流（省流量、多画面更稳）", isOn: $device.useSubStream)
+                Section("取流") {
+                    Toggle("使用子码流（省流量，多画面更流畅）", isOn: $device.useSubStream)
+                    Stepper("通道数：\(device.channelCount)", value: $device.channelCount, in: 1...64)
                 }
 
                 Section {
-                    HStack {
-                        Text("SDK 端口")
-                        Spacer()
-                        TextField("8000", value: $device.sdkPort, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                    }
-                    Text(HikSession.sdkReady
-                         ? "已集成海康 SDK（\(HikSession.sdkVersion)）：走 8000 私有协议，支持主/子码流、回放、声音、对讲"
-                         : "未集成海康 SDK：当前走 ISAPI(80) + RTSP(554)。把你的设备网络SDK放进 HikMon/SDK 后即可切到 8000 私有协议。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("取流方式")
-                }
-
-                Section("通道") {                    if device.cameras.isEmpty {
-                        Text("点下面「拉取通道」从设备读取，也可以先保存，进实时页再拉。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(device.cameras) { c in
-                            HStack {
-                                Text("CH\(c.channel)")
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                Text(c.name)
-                            }
-                        }
-                    }
                     Button {
-                        Task { await probeAndLoad() }
+                        testConnection()
                     } label: {
                         HStack {
-                            Label("拉取通道", systemImage: "arrow.triangle.2.circlepath")
+                            Label("测试登录", systemImage: "bolt.horizontal.circle")
                             Spacer()
-                            if busy { ProgressView() }
+                            if testing { ProgressView() }
                         }
                     }
-                    .disabled(busy || device.host.isEmpty)
-                }
+                    .disabled(testing || device.host.isEmpty)
 
-                if !message.isEmpty {
-                    Section {
-                        Text(message)
+                    if !result.isEmpty {
+                        Text(result)
                             .font(.caption)
-                            .foregroundStyle(ok ? Color.green : Color.red)
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task { await diagnose() }
-                    } label: {
-                        HStack {
-                            Label("端口诊断（扫端口 + 试 RTSP）", systemImage: "stethoscope")
-                            Spacer()
-                            if diagBusy { ProgressView() }
-                        }
-                    }
-                    .disabled(diagBusy || device.host.isEmpty)
-                    ForEach(diagLines, id: \.self) { line in
-                        Text(line).font(.caption)
+                            .foregroundStyle(resultOK ? Color.green : Color.red)
                     }
                 } header: {
-                    Text("诊断")
+                    Text("连通性")
                 } footer: {
-                    Text("海康端口分工：80 = ISAPI(HTTP)、554 = RTSP、8000 = SDK 私有协议。iVMS 4500+ 用的是 8000 那条私有通道，本 App 必须能访问 80 和 554。")
+                    Text("测试会用 8000 端口做一次真实登录（NET_DVR_Login_V40），成功后会读出设备上报的通道数。")
                 }
+
             }
-            .navigationTitle(isNew ? "添加设备" : "编辑设备")
+            .navigationTitle(isNew ? "添加设备" : "设备设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { onSave(device); dismiss() }
-                        .disabled(device.host.isEmpty)
+                    Button("保存") {
+                        onSave(device)
+                        dismiss()
+                    }
+                    .disabled(device.host.isEmpty)
                 }
             }
         }
     }
 
-    private func probeAndLoad() async {        busy = true
-        message = ""
-        defer { busy = false }
-        let api = ISAPIClient(device: device)
-        do {
-            let info = try await api.deviceInfo()
-            let cam = try await api.channels()
-            device.cameras = cam
-            var parts: [String] = []
-            if !info.name.isEmpty { parts.append(info.name) }
-            if !info.model.isEmpty { parts.append(info.model) }
-            if !info.firmware.isEmpty { parts.append("固件 \(info.firmware)") }
-            parts.append("\(cam.count) 个通道")
-            message = parts.joined(separator: " · ")
-            ok = true
-        } catch {
-            message = "连接失败：\(error.localizedDescription)"
-            ok = false
-        }
-    }
+    private func testConnection() {
+        testing = true
+        result = ""
+        let snapshot = device
 
-    /// 端口诊断：先扫常用端口，再分别验证 ISAPI 与 RTSP
-    private func diagnose() async {
-        diagBusy = true
-        diagLines = []
-        defer { diagBusy = false }
-
-        let open = await Prober.scan(host: device.host)
-        if open.isEmpty {
-            diagLines.append("❌ 常用端口（80/8000/554/8080/443…）都连不上")
-        } else {
-            diagLines.append("✅ 开放端口：" + open.map(String.init).joined(separator: "、"))
-        }
-        if open.contains(8000) && !open.contains(80) {
-            diagLines.append("→ 只开了 8000：那是海康 SDK 私有口，iVMS 4500+ 走这条；本 App 需要 80/554")
-        }
-
-        let rt = await Prober.rtsp(host: device.host, port: device.rtspPort)
-        diagLines.append((rt.ok ? "✅ " : "❌ ") + "RTSP \(device.rtspPort)：\(rt.note)")
-
-        do {
-            let info = try await ISAPIClient(device: device).deviceInfo()
-            diagLines.append("✅ ISAPI \(device.isapiPort)：\(info.model.isEmpty ? info.name : info.model)")
-        } catch {
-            diagLines.append("❌ ISAPI \(device.isapiPort)：\(error.localizedDescription)")
+        DispatchQueue.global(qos: .userInitiated).async {
+            HikMonSDK.globalInit()
+            var host = snapshot.host
+            if snapshot.resolveMode == .localDNS, let ip = HikMonSDK.resolveHost(snapshot.host) {
+                host = ip
+            }
+            let uid = HikMonSDK.loginHost(host,
+                                          port: Int32(snapshot.sdkPort),
+                                          user: snapshot.user,
+                                          password: snapshot.pass)
+            guard uid >= 0 else {
+                let err = HikMonSDK.lastErrorText()
+                DispatchQueue.main.async {
+                    self.testing = false
+                    self.resultOK = false
+                    self.result = "❌ \(err)"
+                }
+                return
+            }
+            let chans = Int(HikMonSDK.channelCount(uid))
+            HikMonSDK.logout(uid)
+            DispatchQueue.main.async {
+                self.testing = false
+                self.resultOK = true
+                self.result = "✅ 登录成功，设备上报 \(chans) 个通道"
+                if chans > 0 && chans > self.device.channelCount {
+                    self.device.channelCount = chans
+                }
+            }
         }
     }
 }
